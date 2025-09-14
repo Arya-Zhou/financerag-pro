@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/Opensource_Software/WeKnora/**)",
+      "Read(//d/Opensource_Software/spark_multi_rag/**)",
+      "Bash(tree:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
