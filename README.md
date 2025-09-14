@@ -35,7 +35,10 @@ cp .env.example .env
 
 3. 使用Docker一键部署
 ```bash
-chmod +x deploy.sh
+chmod +x setup_lite.sh  # 轻量级部署
+./setup_lite.sh
+# 或者
+chmod +x deploy.sh  # 完整部署
 ./deploy.sh setup
 ```
 
@@ -45,7 +48,9 @@ chmod +x deploy.sh
 pip install -r requirements.txt
 
 # 启动服务
-python main.py
+python main_lite.py  # 轻量级部署
+# 或者
+python main.py  # 完整部署
 ```
 
 ## 使用方法
@@ -145,6 +150,7 @@ retrieval:
 ```bash
 # 创建虚拟环境
 python -m venv venv
+
 source venv/bin/activate  # Linux/Mac
 # 或
 venv\Scripts\activate  # Windows
@@ -188,6 +194,6 @@ MIT License
 
 ## 联系方式
 
-- 项目作者：[Your Name]
-- Email: your.email@example.com
-- GitHub: https://github.com/your-org/financerag-pro
+- 项目作者：Arya_Zhou
+- Email: 3114481390@qq.com
+- GitHub: https://github.com/Arya_Zhou/financerag-pro
