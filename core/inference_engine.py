@@ -6,8 +6,11 @@ from datetime import datetime
 from enum import Enum
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import openai
 from loguru import logger
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.api_client import SiliconFlowClient
 
 class AnswerType(Enum):
     """Types of answers"""
@@ -233,43 +236,49 @@ class LocalInferenceEngine:
             raise
 
 class APIInferenceEngine:
-    """API-based inference using OpenAI or similar"""
+    """API-based inference using SiliconFlow Qwen3-8B"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.model_name = config.get("models", {}).get("query_understanding", {}).get("model", "gpt-3.5-turbo")
-        self.temperature = config.get("models", {}).get("query_understanding", {}).get("temperature", 0.1)
-        self.max_tokens = config.get("models", {}).get("query_understanding", {}).get("max_tokens", 1000)
+        self.temperature = config.get("models", {}).get("generation", {}).get("temperature", 0.7)
+        self.max_tokens = config.get("models", {}).get("generation", {}).get("max_tokens", 2000)
         
-        # Set API key
-        api_key = config.get("api_keys", {}).get("openai", "")
-        if api_key:
-            openai.api_key = api_key
+        # Initialize SiliconFlow client
+        api_key = config.get("api_keys", {}).get("siliconflow", "")
+        if not api_key:
+            api_key = os.getenv("SILICONFLOW_API_KEY", "")
+        
+        self.batch_mode = config.get("batch_mode", False)
+        self.llm_client = SiliconFlowClient(api_key, batch_mode=self.batch_mode) if api_key else None
     
     async def generate(self, prompt: str, system_prompt: str = None) -> str:
         """Generate response using API"""
         
+        if not self.llm_client:
+            logger.error("LLM client not initialized. Please set SILICONFLOW_API_KEY.")
+            raise ValueError("LLM client not initialized")
+        
         try:
-            messages = []
-            
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            
-            messages.append({"role": "user", "content": prompt})
-            
-            response = await asyncio.to_thread(
-                openai.ChatCompletion.create,
-                model=self.model_name,
-                messages=messages,
+            response = await self.llm_client.generate_text(
+                prompt=prompt,
+                system_prompt=system_prompt,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens
             )
             
-            return response.choices[0].message.content
-            
+            if response:
+                return response
+            else:
+                raise Exception("Empty response from LLM")
+                
         except Exception as e:
             logger.error(f"API generation failed: {str(e)}")
             raise
+    
+    async def close(self):
+        """Close the API client"""
+        if self.llm_client:
+            await self.llm_client.close()
 
 class AnswerFormatter:
     """Format answers for different output types"""

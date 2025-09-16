@@ -3,8 +3,11 @@ import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
-import openai
 from loguru import logger
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.api_client import SiliconFlowClient
 
 class QueryType(Enum):
     """Query type enumeration"""
@@ -49,14 +52,18 @@ class QueryUnderstandingEngine:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.model_name = config.get("models", {}).get("query_understanding", {}).get("model", "gpt-3.5-turbo")
         self.temperature = config.get("models", {}).get("query_understanding", {}).get("temperature", 0.1)
         self.max_tokens = config.get("models", {}).get("query_understanding", {}).get("max_tokens", 1000)
         
-        # Initialize OpenAI client
-        api_key = config.get("api_keys", {}).get("openai", "")
-        if api_key:
-            openai.api_key = api_key
+        # Initialize SiliconFlow client for Qwen3-8B
+        api_key = config.get("api_keys", {}).get("siliconflow", "")
+        if not api_key:
+            # Fallback to environment variable
+            api_key = os.getenv("SILICONFLOW_API_KEY", "")
+        
+        # Check if batch mode is enabled
+        self.batch_mode = config.get("batch_mode", False)
+        self.llm_client = SiliconFlowClient(api_key, batch_mode=self.batch_mode) if api_key else None
     
     async def analyze_query(self, query: str) -> QueryAnalysis:
         """Analyze user query and extract structured information"""
@@ -116,21 +123,34 @@ class QueryUnderstandingEngine:
     
     async def _call_llm(self, prompt: str) -> str:
         """Call LLM API for analysis"""
+        if not self.llm_client:
+            logger.error("LLM client not initialized. Please set SILICONFLOW_API_KEY.")
+            raise ValueError("LLM client not initialized")
+        
         try:
-            response = await asyncio.to_thread(
-                openai.ChatCompletion.create,
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": "You are a financial query analysis expert. Always return valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
+            system_prompt = "You are a financial query analysis expert. Always return valid JSON."
+            
+            # Use SiliconFlow client
+            response = await self.llm_client.generate_text(
+                prompt=prompt,
+                system_prompt=system_prompt,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens
             )
-            return response.choices[0].message.content
+            
+            if response:
+                return response
+            else:
+                raise Exception("Empty response from LLM")
+                
         except Exception as e:
             logger.error(f"LLM call failed: {str(e)}")
             raise
+    
+    async def close(self):
+        """Close the LLM client"""
+        if self.llm_client:
+            await self.llm_client.close()
     
     def _get_default_analysis(self, query: str) -> QueryAnalysis:
         """Get default analysis when LLM fails"""
