@@ -1,6 +1,7 @@
 """
 Lightweight main application for Cloud Studio environment
 No Docker, PostgreSQL, or Redis required
+Integrated with ConfigManager for unified configuration management
 """
 
 import asyncio
@@ -24,10 +25,11 @@ import hashlib
 
 # Import lightweight components
 from config.config import Config
+from core.config_manager import get_config_manager
 from core.query_engine import QueryRoutingEngine
 from core.document_processor import MultiModalPreprocessor
 from core.lightweight_storage import LightweightMetadataManager, InMemoryMetadataManager
-from core.retrieval_engine import MultiPathRetrievalEngine
+from core.retrieval_engine import MultiPathRetrievalEngine, OptimizedVectorRetriever
 from core.validation_engine import ValidationEngine
 from core.inference_engine import InferenceEngine, InferenceContext
 
@@ -155,8 +157,24 @@ class LightweightFinanceRAG:
     """Lightweight FinanceRAG application for Cloud Studio"""
     
     def __init__(self, config_path: str = "config_lite.yaml"):
+        # 初始化配置管理器
+        try:
+            self.config_manager = get_config_manager()
+            self.config_manager.print_config_summary()
+        except Exception as e:
+            logger.warning(f"配置管理器初始化失败: {e}")
+            self.config_manager = None
+        
         # Load configuration
         self.config = Config(config_path)
+        
+        # 从配置管理器获取系统配置
+        if self.config_manager:
+            system_config = self.config_manager.get_system_config()
+            # 更新配置
+            self.config.set("batch_mode", system_config.get("batch_mode", False))
+            self.config.set("batch_size", system_config.get("batch_size", 10))
+            self.config.set("max_concurrent", system_config.get("max_concurrent", 5))
         
         # Initialize components
         self.query_engine = None
@@ -166,6 +184,7 @@ class LightweightFinanceRAG:
         self.validation_engine = None
         self.inference_engine = None
         self.cache = LightweightCache()
+        self.optimized_retriever = None  # 优化的向量检索器
         
         # Create FastAPI app
         self.app = self._create_app()
@@ -256,42 +275,51 @@ class LightweightFinanceRAG:
             return {"documents": [], "message": "Document listing not implemented in lite version"}
     
     async def initialize_components(self):
-        """Initialize all components"""
+        """初始化所有组件"""
         
         logger.info("Initializing FinanceRAG-Pro Lite components...")
         
         try:
-            # Initialize query engine
+            # 初始化查询引擎
             self.query_engine = QueryRoutingEngine(self.config.config)
             
-            # Initialize document processor
+            # 初始化文档处理器
             self.document_processor = MultiModalPreprocessor(self.config.config)
             
-            # Initialize lightweight entity linker
+            # 初始化轻量级实体链接器
             self.entity_linker = LightweightEntityLinkingEngine(
                 self.config.config,
-                use_sqlite=True  # Use SQLite for persistence
+                use_sqlite=True  # 使用SQLite持久化
             )
             await self.entity_linker.initialize()
             
-            # Initialize retrieval engine (simplified)
+            # 初始化优化的向量检索器
+            self.optimized_retriever = OptimizedVectorRetriever(self.config.config)
+            logger.info("优化向量检索器初始化成功")
+            
+            # 初始化检索引擎（简化版）
             self.retrieval_engine = MultiPathRetrievalEngine(
                 self.config.config,
                 self.entity_linker
             )
             
-            # Initialize validation engine
+            # 如果配置管理器可用，显示可用的API提供商
+            if self.config_manager:
+                providers = self.config_manager.get_available_providers()
+                logger.info(f"可用的API提供商: {', '.join(providers)}")
+            
+            # 初始化验证引擎
             self.validation_engine = ValidationEngine(self.config.config)
             
-            # Initialize inference engine
+            # 初始化推理引擎
             self.inference_engine = InferenceEngine(self.config.config)
             await self.inference_engine.initialize()
             
-            logger.info("All components initialized successfully")
+            logger.info("所有组件初始化成功")
             
         except Exception as e:
-            logger.error(f"Component initialization failed: {str(e)}")
-            logger.warning("Running in degraded mode - some features may not work")
+            logger.error(f"组件初始化失败: {str(e)}")
+            logger.warning("运行在降级模式 - 某些功能可能无法工作")
     
     async def cleanup_components(self):
         """Cleanup components"""
@@ -335,34 +363,47 @@ class LightweightFinanceRAG:
                     }]
                 }
             
-            # Step 2: Simplified retrieval
+            # Step 2: 简化的检索
             retrieval_results = []
             
-            # For lightweight version, just do basic semantic search
-            from core.retrieval_engine import RetrievalContext
+            # 尝试使用优化的向量检索器
+            if self.optimized_retriever:
+                try:
+                    results = await self.optimized_retriever.search(
+                        query=request.query,
+                        top_k=request.top_k,
+                        threshold=0.5
+                    )
+                    retrieval_results = results
+                except Exception as e:
+                    logger.warning(f"优化检索失败，回退到标准检索: {e}")
             
-            context = RetrievalContext(
-                query=request.query,
-                strategy="semantic_search",
-                metadata_filters={},
-                top_k=request.top_k,
-                similarity_threshold=0.5
-            )
-            
-            try:
-                results = await self.retrieval_engine.vector_retriever.search(context)
-                retrieval_results = [
-                    {
-                        "chunk_id": r.chunk_id,
-                        "content": r.content,
-                        "score": r.score,
-                        "metadata": r.metadata,
-                        "source": r.source_type
-                    }
-                    for r in results
-                ]
-            except Exception as e:
-                logger.warning(f"Retrieval failed: {e}")
+            # 如果优化检索器不可用或失败，使用标准检索
+            if not retrieval_results:
+                from core.retrieval_engine import RetrievalContext
+                
+                context = RetrievalContext(
+                    query=request.query,
+                    strategy="semantic_search",
+                    metadata_filters={},
+                    top_k=request.top_k,
+                    similarity_threshold=0.5
+                )
+                
+                try:
+                    results = await self.retrieval_engine.vector_retriever.search(context)
+                    retrieval_results = [
+                        {
+                            "chunk_id": r.chunk_id,
+                            "content": r.content,
+                            "score": r.score,
+                            "metadata": r.metadata,
+                            "source": r.source_type
+                        }
+                        for r in results
+                    ]
+                except Exception as e:
+                    logger.warning(f"检索失败: {e}")
                 retrieval_results = []
             
             # Step 3: Generate answer (simplified)

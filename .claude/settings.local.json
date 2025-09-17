@@ -3,7 +3,8 @@
     "allow": [
       "Read(//d/Opensource_Software/WeKnora/**)",
       "Read(//d/Opensource_Software/spark_multi_rag/**)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Read(//d/Applied_Software/Python39/jupyter_default_files/Competition/MMRAG_code/**)"
     ],
     "deny": [],
     "ask": []

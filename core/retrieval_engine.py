@@ -10,6 +10,7 @@ import redis
 from sklearn.metrics.pairwise import cosine_similarity
 from loguru import logger
 import json
+from numpy.linalg import norm
 
 @dataclass
 class RetrievalResult:
@@ -28,6 +29,182 @@ class RetrievalContext:
     metadata_filters: Dict[str, Any]
     top_k: int
     similarity_threshold: float
+
+class OptimizedVectorRetriever:
+    """优化的向量检索器，使用NumPy加速计算"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.embeddings = []  # 存储向量
+        self.documents = []  # 存储文档
+        self.embedding_matrix = None  # NumPy矩阵用于快速计算
+        self.needs_rebuild = True  # 是否需要重建矩阵
+        
+        # 初始化嵌入模型
+        model_name = config.get("models", {}).get("embedding", {}).get("model", "BAAI/bge-m3")
+        self.embedding_model = SentenceTransformer(model_name)
+        
+        logger.info("优化向量检索器初始化成功")
+    
+    def add_documents(self, docs: List[Dict], embeddings: List[List[float]] = None):
+        """添加文档到索引"""
+        if embeddings is None:
+            # 如果没有提供嵌入，生成它们
+            contents = [doc.get("content", "") for doc in docs]
+            embeddings = self.embedding_model.encode(contents)
+        
+        self.documents.extend(docs)
+        self.embeddings.extend(embeddings)
+        self.needs_rebuild = True
+        
+        logger.info(f"添加了 {len(docs)} 个文档到索引")
+    
+    async def index_documents(self, documents: List[Dict[str, Any]]):
+        """索引文档（兼容接口）"""
+        contents = [doc.get("content", "") for doc in documents]
+        embeddings = self.embedding_model.encode(contents)
+        self.add_documents(documents, embeddings.tolist())
+    
+    def _rebuild_matrix(self):
+        """重建 NumPy 矩阵以加速计算"""
+        if self.embeddings and self.needs_rebuild:
+            self.embedding_matrix = np.array(self.embeddings)
+            # 预计算范数以加速余弦相似度计算
+            self.embedding_norms = norm(self.embedding_matrix, axis=1)
+            self.needs_rebuild = False
+            logger.debug(f"重建嵌入矩阵，形状: {self.embedding_matrix.shape}")
+    
+    async def search(
+        self, 
+        query_embedding: List[float] = None,
+        query: str = None,
+        top_k: int = 10,
+        threshold: float = 0.0,
+        context: RetrievalContext = None
+    ) -> List[Dict]:
+        """快速向量搜索"""
+        
+        # 兼容 RetrievalContext 参数
+        if context:
+            query = context.query
+            top_k = context.top_k
+            threshold = context.similarity_threshold
+        
+        if not self.embeddings:
+            return []
+        
+        # 确保矩阵是最新的
+        if self.needs_rebuild:
+            self._rebuild_matrix()
+        
+        # 生成查询向量
+        if query_embedding is None:
+            if query is None:
+                return []
+            query_embedding = self.embedding_model.encode(query)
+        
+        query_emb = np.array(query_embedding)
+        
+        # 批量计算余弦相似度
+        # 优化：使用矩阵乘法代替循环
+        similarities = self.embedding_matrix @ query_emb / (
+            self.embedding_norms * norm(query_emb) + 1e-8
+        )
+        
+        # 获取top_k索引
+        # 优化：使用argpartition代替argsort以提高性能
+        if top_k < len(similarities):
+            # 使用argpartition找到top_k个最大值
+            top_indices = np.argpartition(similarities, -top_k)[-top_k:]
+            # 对这top_k个值进行排序
+            top_indices = top_indices[np.argsort(similarities[top_indices])[::-1]]
+        else:
+            # 如果top_k大于文档数，直接排序
+            top_indices = similarities.argsort()[::-1][:top_k]
+        
+        # 构建结果
+        results = []
+        for idx in top_indices:
+            score = float(similarities[idx])
+            if score >= threshold:
+                # 返回 RetrievalResult 形式的结果（如果有 context）
+                if context:
+                    result = RetrievalResult(
+                        chunk_id=self.documents[idx].get("chunk_id", str(idx)),
+                        content=self.documents[idx].get("content", ""),
+                        score=score,
+                        metadata=self.documents[idx].get("metadata", {}),
+                        source_type="semantic"
+                    )
+                else:
+                    result = {
+                        **self.documents[idx],
+                        "score": score,
+                        "rank": len(results) + 1
+                    }
+                results.append(result)
+        
+        logger.debug(f"向量搜索返回 {len(results)} 个结果")
+        return results
+    
+    async def batch_search(
+        self,
+        queries: List[str],
+        top_k: int = 10,
+        threshold: float = 0.0
+    ) -> List[List[Dict]]:
+        """批量向量搜索，进一步优化性能"""
+        
+        if not self.embeddings:
+            return [[] for _ in queries]
+        
+        # 确保矩阵是最新的
+        if self.needs_rebuild:
+            self._rebuild_matrix()
+        
+        # 批量生成查询向量
+        query_embeddings = self.embedding_model.encode(queries)
+        
+        # 一次性计算所有查询的相似度
+        # 形状：(n_queries, n_documents)
+        similarities = query_embeddings @ self.embedding_matrix.T / (
+            np.outer(norm(query_embeddings, axis=1), self.embedding_norms) + 1e-8
+        )
+        
+        # 为每个查询构建结果
+        all_results = []
+        for query_idx, query_sims in enumerate(similarities):
+            # 获取当前查询的top_k结果
+            if top_k < len(query_sims):
+                top_indices = np.argpartition(query_sims, -top_k)[-top_k:]
+                top_indices = top_indices[np.argsort(query_sims[top_indices])[::-1]]
+            else:
+                top_indices = query_sims.argsort()[::-1][:top_k]
+            
+            # 构建结果
+            results = []
+            for idx in top_indices:
+                score = float(query_sims[idx])
+                if score >= threshold:
+                    result = {
+                        **self.documents[idx],
+                        "score": score,
+                        "rank": len(results) + 1
+                    }
+                    results.append(result)
+            
+            all_results.append(results)
+        
+        logger.debug(f"批量搜索完成，处理了 {len(queries)} 个查询")
+        return all_results
+    
+    def clear(self):
+        """清空索引"""
+        self.embeddings = []
+        self.documents = []
+        self.embedding_matrix = None
+        self.needs_rebuild = True
+        logger.info("向量索引已清空")
 
 class VectorRetriever:
     """Semantic vector retrieval using ChromaDB"""

@@ -6,10 +6,13 @@
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Dict, Any
 from loguru import logger
 from dotenv import load_dotenv
+from tqdm import tqdm
+from tqdm.asyncio import tqdm as async_tqdm
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -19,13 +22,14 @@ from core.document_processor import MultiModalPreprocessor
 from core.entity_linker import EntityLinkingEngine
 from core.retrieval_engine import MultiPathRetrievalEngine
 from core.api_client import CheckpointManager
+from core.config_manager import get_config_manager
 
 class BatchDocumentProcessor:
     """批量文档处理器"""
     
     def __init__(self, config_path: str = "config_api.yaml"):
-        # 加载环境变量
-        load_dotenv(".env.api")
+        # 使用统一配置管理器
+        self.config_manager = get_config_manager()
         
         # 加载配置
         self.config = Config(config_path)
@@ -40,9 +44,21 @@ class BatchDocumentProcessor:
         self.retrieval_engine = None
         self.checkpoint_manager = CheckpointManager("./checkpoints/batch_processing")
         
-        # 批处理配置
-        self.batch_size = int(os.getenv("BATCH_SIZE", "10"))
-        self.max_concurrent = 3  # 最大并发处理数
+        # 批处理配置（从配置管理器获取）
+        self.batch_size = self.config_manager.get_batch_size()
+        self.max_concurrent = self.config_manager.get_max_concurrent()
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        # 统计信息
+        self.stats = {
+            'total': 0,
+            'success': 0,
+            'error': 0,
+            'start_time': None,
+            'total_chunks': 0,
+            'total_tables': 0,
+            'total_charts': 0
+        }
     
     async def initialize(self):
         """初始化组件"""
@@ -63,10 +79,12 @@ class BatchDocumentProcessor:
         
         logger.info("Components initialized successfully")
     
-    async def process_pdf(self, pdf_path: str) -> Dict[str, Any]:
+    async def process_pdf(self, pdf_path: str, pbar: tqdm = None) -> Dict[str, Any]:
         """处理单个PDF文件"""
-        try:
-            logger.info(f"Processing: {pdf_path}")
+        async with self.semaphore:
+            try:
+                if pbar:
+                    pbar.set_description(f"处理中: {os.path.basename(pdf_path)[:30]}...")
             
             # 文档预处理（支持断点续传）
             result = await self.document_processor.preprocess_document(pdf_path)
@@ -93,21 +111,47 @@ class BatchDocumentProcessor:
                 # 索引到检索引擎
                 await self.retrieval_engine.vector_retriever.index_documents(chunk_dicts)
             
-            return {
-                "status": "success",
-                "file": pdf_path,
-                "chunks": len(result.get("text_chunks", [])),
-                "tables": len(result.get("tables", [])),
-                "charts": len(result.get("charts", []))
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing {pdf_path}: {str(e)}")
-            return {
-                "status": "error",
-                "file": pdf_path,
-                "error": str(e)
-            }
+                chunks_count = len(result.get("text_chunks", []))
+                tables_count = len(result.get("tables", []))
+                charts_count = len(result.get("charts", []))
+                
+                # 更新统计
+                self.stats['success'] += 1
+                self.stats['total_chunks'] += chunks_count
+                self.stats['total_tables'] += tables_count
+                self.stats['total_charts'] += charts_count
+                
+                if pbar:
+                    pbar.set_postfix({
+                        '成功': self.stats['success'],
+                        '失败': self.stats['error'],
+                        '块': self.stats['total_chunks']
+                    })
+                
+                return {
+                    "status": "success",
+                    "file": pdf_path,
+                    "chunks": chunks_count,
+                    "tables": tables_count,
+                    "charts": charts_count
+                }
+                
+            except Exception as e:
+                self.stats['error'] += 1
+                logger.error(f"Error processing {pdf_path}: {str(e)}")
+                
+                if pbar:
+                    pbar.set_postfix({
+                        '成功': self.stats['success'],
+                        '失败': self.stats['error'],
+                        '块': self.stats['total_chunks']
+                    })
+                
+                return {
+                    "status": "error",
+                    "file": pdf_path,
+                    "error": str(e)
+                }
     
     async def process_batch(
         self,
@@ -120,13 +164,28 @@ class BatchDocumentProcessor:
             import hashlib
             task_id = hashlib.md5(str(pdf_files).encode()).hexdigest()[:8]
         
+        # 初始化统计
+        self.stats['total'] = len(pdf_files)
+        self.stats['start_time'] = time.time()
+        
         # 尝试从断点恢复
         checkpoint = self.checkpoint_manager.load_checkpoint(task_id)
         if checkpoint:
             processed = checkpoint.get("processed", [])
             results = checkpoint.get("results", [])
             start_index = len(processed)
-            logger.info(f"Resuming from checkpoint: {start_index}/{len(pdf_files)} processed")
+            
+            # 恢复统计信息
+            for r in results:
+                if r["status"] == "success":
+                    self.stats['success'] += 1
+                    self.stats['total_chunks'] += r.get("chunks", 0)
+                    self.stats['total_tables'] += r.get("tables", 0)
+                    self.stats['total_charts'] += r.get("charts", 0)
+                else:
+                    self.stats['error'] += 1
+            
+            logger.info(f"从断点恢复: {start_index}/{len(pdf_files)} 已处理")
         else:
             processed = []
             results = []
@@ -135,36 +194,53 @@ class BatchDocumentProcessor:
         # 处理剩余文件
         remaining_files = pdf_files[start_index:]
         
-        for i in range(0, len(remaining_files), self.batch_size):
-            batch = remaining_files[i:i + self.batch_size]
-            
-            # 限制并发数
-            semaphore = asyncio.Semaphore(self.max_concurrent)
-            
-            async def process_with_limit(pdf_path):
-                async with semaphore:
-                    return await self.process_pdf(pdf_path)
-            
-            # 并发处理批次
-            batch_tasks = [process_with_limit(pdf) for pdf in batch]
-            batch_results = await asyncio.gather(*batch_tasks)
-            
-            # 更新结果
-            results.extend(batch_results)
-            processed.extend(batch)
-            
-            # 保存断点
-            self.checkpoint_manager.save_checkpoint(task_id, {
-                "processed": processed,
-                "results": results,
-                "total": len(pdf_files)
+        # 创建总进度条
+        with tqdm(total=len(pdf_files), initial=start_index, desc="批量处理PDF") as pbar:
+            # 显示初始统计
+            pbar.set_postfix({
+                '成功': self.stats['success'],
+                '失败': self.stats['error'],
+                '块': self.stats['total_chunks']
             })
             
-            logger.info(f"Batch progress: {len(processed)}/{len(pdf_files)}")
+            for i in range(0, len(remaining_files), self.batch_size):
+                batch = remaining_files[i:i + self.batch_size]
+                
+                # 创建批次任务
+                batch_tasks = []
+                for pdf_path in batch:
+                    batch_tasks.append(self.process_pdf(pdf_path, pbar))
+                
+                # 并发处理批次
+                batch_results = await asyncio.gather(*batch_tasks)
+                
+                # 更新结果
+                results.extend(batch_results)
+                processed.extend(batch)
+                
+                # 更新进度条
+                pbar.update(len(batch))
+                
+                # 保存断点
+                self.checkpoint_manager.save_checkpoint(task_id, {
+                    "processed": processed,
+                    "results": results,
+                    "total": len(pdf_files)
+                })
+                
+                # 批次间休息
+                if i + self.batch_size < len(remaining_files):
+                    await asyncio.sleep(2)
             
-            # 批次间休息
-            if i + self.batch_size < len(remaining_files):
-                await asyncio.sleep(2)
+            # 显示最终统计
+            elapsed = time.time() - self.stats['start_time']
+            pbar.set_postfix({
+                '成功': self.stats['success'],
+                '失败': self.stats['error'],
+                '块': self.stats['total_chunks'],
+                '耗时': f"{elapsed:.1f}s",
+                '速度': f"{self.stats['success']/max(elapsed, 1):.2f}个/秒"
+            })
         
         # 删除断点
         self.checkpoint_manager.remove_checkpoint(task_id)
@@ -179,28 +255,54 @@ class BatchDocumentProcessor:
         if self.document_processor:
             await self.document_processor.pdf_processor.close()
     
+    def get_progress_info(self) -> Dict[str, Any]:
+        """获取进度信息"""
+        elapsed = time.time() - self.stats['start_time'] if self.stats['start_time'] else 0
+        return {
+            'total': self.stats['total'],
+            'success': self.stats['success'],
+            'error': self.stats['error'],
+            'success_rate': self.stats['success'] / max(self.stats['total'], 1),
+            'elapsed_time': elapsed,
+            'avg_time_per_doc': elapsed / max(self.stats['success'], 1),
+            'total_chunks': self.stats['total_chunks'],
+            'total_tables': self.stats['total_tables'],
+            'total_charts': self.stats['total_charts']
+        }
+    
     def generate_report(self, results: List[Dict[str, Any]]):
         """生成处理报告"""
+        progress_info = self.get_progress_info()
         total = len(results)
-        success = sum(1 for r in results if r["status"] == "success")
-        failed = total - success
+        success = progress_info['success']
+        failed = progress_info['error']
         
-        total_chunks = sum(r.get("chunks", 0) for r in results if r["status"] == "success")
-        total_tables = sum(r.get("tables", 0) for r in results if r["status"] == "success")
-        total_charts = sum(r.get("charts", 0) for r in results if r["status"] == "success")
+        total_chunks = progress_info['total_chunks']
+        total_tables = progress_info['total_tables']
+        total_charts = progress_info['total_charts']
         
         report = f"""
 ========================================
 批量处理报告
 ========================================
 总文件数: {total}
-成功: {success}
+成功: {success} ({progress_info['success_rate']:.1%})
 失败: {failed}
+
+处理性能:
+- 总耗时: {progress_info['elapsed_time']:.1f} 秒
+- 平均速度: {progress_info['avg_time_per_doc']:.2f} 秒/文档
+- 处理速率: {success/max(progress_info['elapsed_time'], 1):.2f} 文档/秒
 
 提取统计:
 - 文本块: {total_chunks}
 - 表格: {total_tables}
 - 图表: {total_charts}
+
+配置信息:
+- 批处理大小: {self.batch_size}
+- 最大并发数: {self.max_concurrent}
+- API提供商: {', '.join(self.config_manager.get_available_providers())}
 
 失败文件:
 """
@@ -213,6 +315,14 @@ class BatchDocumentProcessor:
 
 async def main():
     """主函数"""
+    
+    # 验证配置
+    try:
+        config_manager = get_config_manager()
+        config_manager.print_config_summary()
+    except Exception as e:
+        logger.error(f"配置验证失败: {str(e)}")
+        return
     
     # 设置日志
     logger.add("batch_processing.log", rotation="100 MB")
