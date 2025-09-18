@@ -1,0 +1,83 @@
+system:
+  name: FinanceRAG-Pro-Lite
+  version: 1.0.0-lite
+  debug: false
+  log_level: INFO
+  environment: production
+
+models:
+  # Use smaller models for lightweight deployment
+  embedding:
+    model: sentence-transformers/all-MiniLM-L6-v2
+    dimension: 384
+    batch_size: 16
+    precision: fp16
+  
+  reranking:
+    model: BAAI/bge-reranker-base
+    top_k: 5
+    precision: int8
+  
+  # Use API for generation (no local LLM)
+  generation:
+    use_api: true
+    model: gpt-3.5-turbo
+    temperature: 0.7
+    max_tokens: 1500
+
+database:
+  # Use SQLite instead of PostgreSQL for lightweight deployment
+  sqlite:
+    path: ./data/financerag.db
+    timeout: 30
+    journal_mode: WAL
+  
+  # Use in-memory cache instead of Redis
+  cache:
+    type: memory
+    max_size: 1000
+    ttl: 3600
+  
+  # ChromaDB with persistent storage
+  chromadb:
+    persist_directory: ./data/chromadb
+    collection_name: finance_documents
+    anonymized_telemetry: false
+
+retrieval:
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k: 10
+  similarity_threshold: 0.7
+  enable_rerank: true
+  max_chunks: 100
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  cors_enabled: true
+  docs_enabled: true
+  max_request_size: 52428800  # 50MB
+  request_timeout: 300
+
+performance:
+  max_workers: 4
+  batch_processing: true
+  async_enabled: true
+  timeout: 30
+  memory_threshold_mb: 800
+  periodic_cleanup_minutes: 30
+
+logging:
+  level: INFO
+  format: detailed
+  file_rotation: "10 MB"
+  file_retention: "7 days"
+  performance_log: true
+
+security:
+  enable_cors: true
+  allowed_origins: ["*"]
+  max_file_size_mb: 50
+  allowed_extensions: [".pdf", ".docx", ".txt", ".md"]
+  rate_limiting: false

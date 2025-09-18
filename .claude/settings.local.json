@@ -4,7 +4,8 @@
       "Read(//d/Opensource_Software/WeKnora/**)",
       "Read(//d/Opensource_Software/spark_multi_rag/**)",
       "Bash(tree:*)",
-      "Read(//d/Applied_Software/Python39/jupyter_default_files/Competition/MMRAG_code/**)"
+      "Read(//d/Applied_Software/Python39/jupyter_default_files/Competition/MMRAG_code/**)",
+      "Read(//d/往昔资源/研究生资料/02比赛竞赛/Datawhale（未）/多模态RAG/datas/**)"
     ],
     "deny": [],
     "ask": []

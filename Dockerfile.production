@@ -1,0 +1,69 @@
+# Multi-stage build for optimized production image
+FROM python:3.9-slim as builder
+
+# Set working directory
+WORKDIR /build
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# Production stage
+FROM python:3.9-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    APP_HOME=/app \
+    LOGS_DIR=/app/logs \
+    DATA_DIR=/app/data
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libgomp1 \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create application user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set working directory
+WORKDIR ${APP_HOME}
+
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /root/.local
+
+# Make sure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
+
+# Create necessary directories
+RUN mkdir -p ${LOGS_DIR} ${DATA_DIR}/pdfs ${DATA_DIR}/chromadb ${DATA_DIR}/sqlite \
+    && chown -R appuser:appuser ${APP_HOME}
+
+# Copy application code
+COPY --chown=appuser:appuser . .
+
+# Create .env file placeholder
+RUN touch .env && chown appuser:appuser .env
+
+# Switch to non-root user
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import httpx; exit(0 if httpx.get('http://localhost:8000/health', timeout=5).status_code == 200 else 1)" || exit 1
+
+# Expose port
+EXPOSE 8000
+
+# Run the application
+CMD ["python", "main_lite.py"]

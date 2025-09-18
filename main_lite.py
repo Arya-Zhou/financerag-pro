@@ -2,21 +2,27 @@
 Lightweight main application for Cloud Studio environment
 No Docker, PostgreSQL, or Redis required
 Integrated with ConfigManager for unified configuration management
+Enhanced with production-ready optimizations
 """
 
 import asyncio
 import os
 import sys
+import time
+import gc
+import psutil
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import uvicorn
 from loguru import logger
 import tempfile
@@ -50,6 +56,225 @@ class DocumentUploadResponse(BaseModel):
     status: str = Field(..., description="Processing status")
     message: str = Field(..., description="Status message")
     metadata: Dict[str, Any] = Field(..., description="Document metadata")
+
+# =========================
+# Production Optimizations
+# =========================
+
+# File upload validation constants
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md'}
+MIN_FILE_SIZE = 100  # 100 bytes minimum
+
+# Setup enhanced logging
+def setup_logging():
+    """Setup production-ready logging configuration"""
+    # Create logs directory
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Remove default logger
+    logger.remove()
+    
+    # Console logger with custom format
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="INFO"
+    )
+    
+    # File logger for all logs
+    logger.add(
+        "logs/app.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}"
+    )
+    
+    # Separate error logger
+    logger.add(
+        "logs/error.log",
+        rotation="10 MB",
+        retention="30 days",
+        level="ERROR",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}\n{exception}"
+    )
+    
+    # Performance logger
+    logger.add(
+        "logs/performance.log",
+        rotation="10 MB",
+        retention="3 days",
+        level="INFO",
+        filter=lambda record: "performance" in record["extra"],
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}"
+    )
+
+# Initialize logging
+setup_logging()
+
+# Performance tracking context manager
+@asynccontextmanager
+async def track_performance(operation_name: str):
+    """Track performance of operations"""
+    start_time = time.time()
+    start_memory = psutil.Process().memory_info().rss / 1024 / 1024  # MB
+    
+    try:
+        yield
+    finally:
+        end_time = time.time()
+        end_memory = psutil.Process().memory_info().rss / 1024 / 1024  # MB
+        
+        duration = end_time - start_time
+        memory_delta = end_memory - start_memory
+        
+        logger.bind(performance=True).info(
+            f"{operation_name} | Duration: {duration:.3f}s | Memory Δ: {memory_delta:.2f}MB | Final: {end_memory:.2f}MB"
+        )
+
+# Performance Monitoring Middleware
+class PerformanceMiddleware:
+    """Middleware to track request performance"""
+    
+    def __init__(self, app: FastAPI):
+        self.app = app
+        self.request_count = 0
+        self.total_duration = 0
+        self.slow_requests = []
+    
+    async def __call__(self, request: Request, call_next):
+        """Process request and track performance"""
+        self.request_count += 1
+        start_time = time.time()
+        
+        # Add request ID
+        request_id = hashlib.md5(f"{time.time()}{self.request_count}".encode()).hexdigest()[:8]
+        
+        logger.info(f"Request [{request_id}] started: {request.method} {request.url.path}")
+        
+        try:
+            response = await call_next(request)
+            duration = time.time() - start_time
+            self.total_duration += duration
+            
+            # Track slow requests (> 2 seconds)
+            if duration > 2.0:
+                self.slow_requests.append({
+                    "path": str(request.url.path),
+                    "method": request.method,
+                    "duration": duration,
+                    "timestamp": datetime.now().isoformat()
+                })
+                logger.warning(f"Slow request [{request_id}]: {duration:.3f}s")
+            
+            # Add performance headers
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Process-Time"] = str(duration)
+            
+            logger.info(f"Request [{request_id}] completed: {response.status_code} in {duration:.3f}s")
+            return response
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"Request [{request_id}] failed after {duration:.3f}s: {str(e)}")
+            raise
+    
+    def get_stats(self):
+        """Get performance statistics"""
+        avg_duration = self.total_duration / max(self.request_count, 1)
+        return {
+            "total_requests": self.request_count,
+            "average_duration": avg_duration,
+            "total_duration": self.total_duration,
+            "slow_requests": len(self.slow_requests),
+            "recent_slow_requests": self.slow_requests[-10:]  # Last 10 slow requests
+        }
+
+# File validation function
+def validate_upload_file(file: UploadFile) -> None:
+    """Validate uploaded file"""
+    # Check file extension
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type {file_ext} not allowed. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Check file size (estimate from content-length header)
+    if hasattr(file, 'size') and file.size:
+        if file.size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size: {MAX_FILE_SIZE / 1024 / 1024:.1f}MB"
+            )
+        if file.size < MIN_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too small. Minimum size: {MIN_FILE_SIZE} bytes"
+            )
+
+# Memory management utilities
+class MemoryManager:
+    """Memory management and optimization"""
+    
+    def __init__(self, threshold_mb: int = 1000):
+        self.threshold_mb = threshold_mb
+        self.cleanup_count = 0
+        self.last_cleanup = datetime.now()
+    
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current memory usage statistics"""
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        
+        return {
+            "rss_mb": memory_info.rss / 1024 / 1024,
+            "vms_mb": memory_info.vms / 1024 / 1024,
+            "percent": process.memory_percent(),
+            "available_mb": psutil.virtual_memory().available / 1024 / 1024
+        }
+    
+    async def cleanup_if_needed(self) -> bool:
+        """Perform cleanup if memory usage is high"""
+        memory_stats = self.get_memory_usage()
+        
+        if memory_stats["rss_mb"] > self.threshold_mb:
+            logger.warning(f"High memory usage detected: {memory_stats['rss_mb']:.2f}MB")
+            
+            # Force garbage collection
+            gc.collect()
+            
+            self.cleanup_count += 1
+            self.last_cleanup = datetime.now()
+            
+            # Get new stats
+            new_stats = self.get_memory_usage()
+            freed = memory_stats["rss_mb"] - new_stats["rss_mb"]
+            
+            logger.info(f"Memory cleanup completed. Freed: {freed:.2f}MB")
+            return True
+        
+        return False
+    
+    async def periodic_cleanup(self, interval_minutes: int = 30):
+        """Periodic memory cleanup task"""
+        while True:
+            await asyncio.sleep(interval_minutes * 60)
+            
+            try:
+                await self.cleanup_if_needed()
+                
+                # Also clear caches if implemented
+                logger.debug("Periodic cleanup completed")
+                
+            except Exception as e:
+                logger.error(f"Error during periodic cleanup: {str(e)}")
+
+# Global memory manager instance
+memory_manager = MemoryManager(threshold_mb=800)
 
 # Lightweight Entity Linking Engine
 class LightweightEntityLinkingEngine:
@@ -186,16 +411,22 @@ class LightweightFinanceRAG:
         self.cache = LightweightCache()
         self.optimized_retriever = None  # 优化的向量检索器
         
+        # Performance tracking
+        self.performance_middleware = None
+        self.startup_time = None
+        
         # Create FastAPI app
         self.app = self._create_app()
     
     def _create_app(self) -> FastAPI:
-        """Create FastAPI application"""
+        """Create FastAPI application with enhanced features"""
         
         app = FastAPI(
             title="FinanceRAG-Pro Lite",
             description="Lightweight Financial RAG System for Cloud Studio",
-            version="1.0.0-lite"
+            version="1.0.0-lite-enhanced",
+            docs_url="/docs",
+            redoc_url="/redoc"
         )
         
         # Add CORS middleware
@@ -206,6 +437,10 @@ class LightweightFinanceRAG:
             allow_methods=["*"],
             allow_headers=["*"]
         )
+        
+        # Add performance monitoring middleware
+        self.performance_middleware = PerformanceMiddleware(app)
+        app.middleware("http")(self.performance_middleware)
         
         # Setup routes
         self._setup_routes(app)
