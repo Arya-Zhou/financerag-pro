@@ -1,0 +1,95 @@
+system:
+  name: FinanceRAG-Pro-Production
+  version: 1.0.0
+  environment: production
+  debug: false
+  log_level: INFO
+
+models:
+  # 生产级嵌入模型
+  embedding:
+    model: BAAI/bge-m3
+    dimension: 1024
+    batch_size: 32
+    device: cuda
+  
+  # 查询理解模型
+  query_understanding:
+    model: gpt-3.5-turbo
+    temperature: 0.1
+    max_tokens: 1000
+  
+  # 生成模型配置
+  generation:
+    use_api: true
+    model: gpt-4-turbo-preview
+    temperature: 0.2
+    max_tokens: 2000
+    backup_model: gpt-3.5-turbo
+
+database:
+  # PostgreSQL配置
+  postgresql:
+    host: ${PG_HOST}
+    port: ${PG_PORT}
+    database: ${PG_DATABASE}
+    user: ${PG_USER}
+    password: ${PG_PASSWORD}
+    pool_size: 10
+    max_overflow: 20
+  
+  # Redis缓存配置
+  redis:
+    host: ${REDIS_HOST}
+    port: ${REDIS_PORT}
+    db: ${REDIS_DB}
+    password: ${REDIS_PASSWORD}
+    connection_pool_size: 10
+  
+  # ChromaDB向量数据库
+  chromadb:
+    host: localhost
+    port: 8001
+    collection_name: finance_documents_prod
+
+storage:
+  # MinIO对象存储
+  minio:
+    endpoint: ${MINIO_ENDPOINT}
+    access_key: ${MINIO_ACCESS_KEY}
+    secret_key: ${MINIO_SECRET_KEY}
+    bucket: ${MINIO_BUCKET}
+    secure: false
+
+retrieval:
+  chunk_size: 1024
+  chunk_overlap: 100
+  top_k: 20
+  similarity_threshold: 0.75
+  rerank_threshold: 0.8
+
+api:
+  host: ${API_HOST}
+  port: ${API_PORT}
+  cors_enabled: true
+  docs_enabled: false  # 生产环境关闭文档
+  rate_limit: 100      # 每分钟请求限制
+
+performance:
+  max_workers: 8
+  batch_processing: true
+  async_enabled: true
+  timeout: 60
+  cache_ttl: 3600      # 缓存TTL（秒）
+
+logging:
+  level: ${LOG_LEVEL}
+  file: ${LOG_PATH}/financerag-prod.log
+  rotation: "10 MB"
+  retention: "30 days"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
+
+monitoring:
+  enable_metrics: true
+  health_check_interval: 30
+  performance_tracking: true

@@ -17,7 +17,7 @@ from tqdm.asyncio import tqdm as async_tqdm
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from config.config import Config
+from configs.config import Config
 from core.document_processor import MultiModalPreprocessor
 from core.entity_linker import EntityLinkingEngine
 from core.retrieval_engine import MultiPathRetrievalEngine
@@ -27,7 +27,7 @@ from core.config_manager import get_config_manager
 class BatchDocumentProcessor:
     """批量文档处理器"""
     
-    def __init__(self, config_path: str = "config_api.yaml"):
+    def __init__(self, config_path: str = "configs/production.yaml"):
         # 使用统一配置管理器
         self.config_manager = get_config_manager()
         

@@ -1,0 +1,19 @@
+# 忽略所有 .env 文件 (包含敏感信息)
+*.env
+.env
+*.env.*
+# 但不忽略示例文件
+!*.env.example 
+
+# 忽略 IDE 和操作系统生成的文件
+.DS_Store
+.vscode/
+/.claude/
+/__pycache__/
+
+# 忽略某个具体的文件或文件夹
+/docs/
+/data/
+
+# 忽略某个具体的配置文件
+# 例如config/database.local.js

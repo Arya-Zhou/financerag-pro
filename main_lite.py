@@ -30,7 +30,7 @@ import shutil
 import hashlib
 
 # Import lightweight components
-from config.config import Config
+from configs.config import Config
 from core.config_manager import get_config_manager
 from core.query_engine import QueryRoutingEngine
 from core.document_processor import MultiModalPreprocessor
@@ -67,6 +67,75 @@ ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md'}
 MIN_FILE_SIZE = 100  # 100 bytes minimum
 
 # Setup enhanced logging
+# Configuration path utilities (from main_lite_fixes.py)
+def get_config_path() -> str:
+    """Get the appropriate config file path"""
+    config_files = [
+        "configs/lite.yaml",
+        "configs/production.yaml",
+        "config_lite.yaml",  # legacy support
+        "config.yaml", 
+        "config_api.yaml"
+    ]
+    
+    for config_file in config_files:
+        if Path(config_file).exists():
+            return config_file
+    
+    # Create default config if none exists
+    create_default_config()
+    return "configs/lite.yaml"
+
+def create_default_config():
+    """Create default configuration file"""
+    os.makedirs("configs", exist_ok=True)
+    
+    default_config = """system:
+  name: FinanceRAG-Pro-Lite
+  version: 1.0.0-lite
+  debug: false
+  log_level: INFO
+
+models:
+  embedding:
+    model: sentence-transformers/all-MiniLM-L6-v2
+    dimension: 384
+    batch_size: 16
+  
+  generation:
+    use_api: true
+    model: gpt-3.5-turbo
+
+database:
+  sqlite:
+    path: ./data/financerag.db
+  chromadb:
+    persist_directory: ./data/chromadb
+    collection_name: finance_documents
+
+retrieval:
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k: 10
+  similarity_threshold: 0.7
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  cors_enabled: true
+  docs_enabled: true
+
+performance:
+  max_workers: 4
+  batch_processing: true
+  async_enabled: true
+  timeout: 30
+"""
+    
+    with open("configs/lite.yaml", "w", encoding="utf-8") as f:
+        f.write(default_config)
+    logger.info("Created default configuration: configs/lite.yaml")
+
 def setup_logging():
     """Setup production-ready logging configuration"""
     # Create logs directory
