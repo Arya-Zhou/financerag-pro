@@ -9,6 +9,7 @@
 .DS_Store
 .vscode/
 /.claude/
+/.codex/
 /__pycache__/
 
 # 忽略某个具体的文件或文件夹
