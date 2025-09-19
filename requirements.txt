@@ -1,8 +1,10 @@
 # Core dependencies
-python>=3.8
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
+
+# SQLite兼容性修复 (用于ChromaDB)
+pysqlite3-binary==0.5.2
 
 # Document processing
 PyPDF2==3.0.1

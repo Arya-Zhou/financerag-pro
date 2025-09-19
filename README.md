@@ -7,7 +7,7 @@
 ```
 FinanceRAG-Pro/
 ├── 📁 configs/                    # 配置文件目录
-│   ├── .env.example            # 环境变量模板
+│   ├── .env.example             # 环境变量示例
 │   ├── lite.yaml                 # 轻量级配置
 │   ├── production.yaml           # 生产环境配置
 │   └── config.py                 # 配置管理类
@@ -28,6 +28,21 @@ FinanceRAG-Pro/
 └── requirements.txt              # 依赖文件
 ```
 
+## 📋 环境要求
+
+### 系统要求
+- **Python**: 3.8+ (推荐 3.9 或 3.10)
+- **操作系统**: Linux, macOS, Windows
+- **内存**: 最少 2GB (推荐 4GB+)
+- **磁盘空间**: 最少 1GB
+
+### API 密钥要求
+- **LLM服务密钥** (必需) - 默认使用 OpenAI API Key，可替代为其他兼容的LLM服务密钥
+- **多模态模型密钥** (图文融合检索) - 默认使用 ModelScope API Key，可替代为其他多模态服务密钥
+- **文本理解密钥** (文本检索优化) - 默认使用 SiliconFlow API Key，可替代为其他文本理解服务密钥
+
+> **注意**: 至少需要配置一个LLM服务密钥才能正常运行系统。多模态和文本理解密钥为可选配置，用于增强相应功能。
+
 ## 🚀 快速开始
 
 ### 方法一：使用统一部署脚本（推荐）
@@ -47,7 +62,7 @@ bash deploy/setup.sh production
 
 ```bash
 # 1. 创建环境配置
-cp configs/.env.template .env
+cp configs/.env.example .env
 # 编辑 .env 添加API密钥
 
 # 2. 安装依赖
@@ -69,7 +84,7 @@ python main_lite.py
 ## 🔧 配置说明
 
 ### 环境配置
-- 复制 `configs/.env.template` 为 `.env`
+- 复制 `configs/.env.example` 为 `.env`
 - 根据需要修改API密钥和其他配置
 
 ### 系统配置

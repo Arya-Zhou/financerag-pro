@@ -15,6 +15,7 @@
 # 忽略某个具体的文件或文件夹
 /docs/
 /data/
+/venv/
 
 # 忽略某个具体的配置文件
 # 例如config/database.local.js

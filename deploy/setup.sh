@@ -74,19 +74,24 @@ EOF
 # 检查Python环境
 check_python() {
     print_header "检查Python环境"
-    
+
     if ! command -v python3 &> /dev/null; then
         print_error "Python 3 未安装，请先安装Python 3.8+"
         exit 1
     fi
-    
-    PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-    if [[ $(echo "$PYTHON_VERSION < 3.8" | bc -l) -eq 1 ]]; then
-        print_error "需要Python 3.8+，当前版本: $PYTHON_VERSION"
+
+    # 获取Python版本并清理格式
+    PYTHON_VERSION_FULL=$(python3 --version 2>&1 | cut -d' ' -f2 | tr -d '\r\n\\')
+    PYTHON_MAJOR=$(echo "$PYTHON_VERSION_FULL" | cut -d'.' -f1)
+    PYTHON_MINOR=$(echo "$PYTHON_VERSION_FULL" | cut -d'.' -f2)
+
+    # 使用纯bash进行版本比较，避免依赖bc
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+        print_error "需要Python 3.8+，当前版本: $PYTHON_VERSION_FULL"
         exit 1
     fi
-    
-    print_status "Python版本检查通过: $PYTHON_VERSION"
+
+    print_status "Python版本检查通过: $PYTHON_VERSION_FULL"
 }
 
 # 检查环境
@@ -178,7 +183,7 @@ EOF
     
     # 创建环境文件
     if [ ! -f ".env" ]; then
-        cp configs/.env.template .env
+        cp configs/.env.example .env
         print_status "环境配置文件已创建，请编辑 .env 添加API密钥"
     fi
     
@@ -193,17 +198,33 @@ EOF
 # Cloud Studio部署
 deploy_cloud_studio() {
     print_header "执行Cloud Studio专用部署"
-    
+
     # Cloud Studio特定优化
     export TOKENIZERS_PARALLELISM=false
     export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-    
+
+    # 解决ChromaDB的SQLite版本要求
+    print_status "检查SQLite版本并处理ChromaDB兼容性..."
+
+    # 安装pysqlite3-binary作为SQLite的替代方案
+    pip install pysqlite3-binary
+
+    # 创建SQLite兼容性脚本
+    cat > fix_sqlite.py << 'EOF'
+import sys
+import pysqlite3
+sys.modules['sqlite3'] = pysqlite3
+EOF
+
+    # 在Python启动时自动导入兼容性修复
+    export PYTHONSTARTUP="$(pwd)/fix_sqlite.py"
+
     # 安装依赖（Cloud Studio优化版本）
     pip install -r requirements.txt
     
     # 创建Cloud Studio配置
     if [ ! -f ".env" ]; then
-        cp configs/.env.template .env
+        cp configs/.env.example .env
         # Cloud Studio特定配置
         cat >> .env << EOF
 
@@ -236,7 +257,7 @@ deploy_production() {
     
     # 创建环境文件
     if [ ! -f ".env" ]; then
-        cp configs/.env.template .env
+        cp configs/.env.example .env
         print_warning "请编辑 .env 文件配置生产环境参数"
     fi
     

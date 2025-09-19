@@ -5,6 +5,15 @@ Integrated with ConfigManager for unified configuration management
 Enhanced with production-ready optimizations
 """
 
+# SQLite兼容性修复 - 必须在导入其他模块之前
+try:
+    import pysqlite3
+    import sys
+    sys.modules['sqlite3'] = pysqlite3
+    print("✓ SQLite兼容性修复已应用")
+except ImportError:
+    print("⚠ pysqlite3未安装，使用系统SQLite（可能遇到版本问题）")
+
 import asyncio
 import os
 import sys
