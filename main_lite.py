@@ -40,7 +40,8 @@ import hashlib
 
 # Import lightweight components
 from configs.config import Config
-from core.config_manager import get_config_manager
+from core.config_manager import get_new_config_manager  # 使用新的配置管理器
+from core.new_api_client import get_text_client, get_vision_client, get_generate_client, close_all_clients  # 新的API客户端
 from core.query_engine import QueryRoutingEngine
 from core.document_processor import MultiModalPreprocessor
 from core.lightweight_storage import LightweightMetadataManager, InMemoryMetadataManager
